@@ -11,14 +11,17 @@ Parameters:
     Default: 2
   NumThreads:
     Type: Number
-    Default: 1
+    Default: 4
   HarnessUrl:
     Type: String
+    Default: https://github.com/benjaminkoffel/afl-aws/raw/master/examples/libpng/libpng.amz2.tar.gz
   VpcId:
     Type: String
   SubnetId:
     Type: String
-  KeyName:
+  SshKeyName:
+    Type: String
+  SshCidrIp:
     Type: String
 Resources:
   AutoScalingGroup:
@@ -38,7 +41,7 @@ Resources:
         - !Ref InstanceSecurityGroup
       IamInstanceProfile: !Ref InstanceProfile
       AssociatePublicIpAddress: true
-      KeyName: !Ref KeyName
+      KeyName: !Ref SshKeyName
       UserData:
         Fn::Base64:
           !Sub |
@@ -61,7 +64,8 @@ Resources:
             do 
               nohup /opt/afl-2.52b/afl-fuzz -i /opt/input -o /mnt/efs/output -S "$instance-$i" /opt/harness &> "/var/log/afl.$instance-$i.log" &
             done
-            cat nohup.out
+            ps -aux | grep afl-fuzz
+            echo "INSTANCE INITIALISED"
   InstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -71,8 +75,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          # CidrIp: 0.0.0.0/0
-          CidrIp: 0.0.0.0/0
+          CidrIp: !Ref SshCidrIp
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
