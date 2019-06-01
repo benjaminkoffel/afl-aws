@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t2.micro
+  ImageId:
+    Type: String
+    Default: ami-0fb7513bcdc525c3b
+  NumInstances:
+    Type: Number
+    Default: 2
+  NumThreads:
+    Type: Number
+    Default: 1
+  VpcId:
+    Type: String
+    Default: vpc-0b7843e3bca36c440
+  SubnetId:
+    Type: String
+    Default: subnet-0e5e72eeecefc2782
+  KeyName:
+    Type: String
+    Default: bkoffel
+  HarnessUrl:
+    Type: String
+    Default: https://github.com/benjaminkoffel/harnesses/raw/master/libpng.amz2.tar.gz
+Resources:
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref SubnetId
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MinSize: !Ref NumInstances
+      MaxSize: !Ref NumInstances
+    # CreationPolicy:
+    #   ResourceSignal:
+    #     Count: !Ref NumInstances
+    #     Timeout: PT15M
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      SecurityGroups: 
+        - !Ref InstanceSecurityGroup
+      IamInstanceProfile: !Ref InstanceProfile
+      AssociatePublicIpAddress: true
+      KeyName: !Ref KeyName
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/usr/bin/env bash
+            set -euxo pipefail
+            yum install -y amazon-efs-utils awscli gcc gcc-c++ make
+            mkdir /mnt/efs
+            mount -t efs ${FileSystem}:/ /mnt/efs
+            mkdir -p /mnt/efs/output
+            cd /opt
+            wget http://lcamtuf.coredump.cx/afl/releases/afl-2.52b.tgz
+            tar -xzf afl-2.52b.tgz
+            cd afl-2.52b
+            make
+            cd /opt
+            wget -O harness.tar.gz ${HarnessUrl}
+            tar -xzvf harness.tar.gz
+            instance=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            for i in {1..${NumThreads}}
+            do 
+              nohup /opt/afl-2.52b/afl-fuzz -i input -o /mnt/efs/output -M "$instance-$i" /opt/harness &
+            done
+            cat nohup.out
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Instance security group
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          # CidrIp: 0.0.0.0/0
+          CidrIp: 0.0.0.0/0
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref Role
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties: 
+      Encrypted: false
+  MountTarget: 
+    Type: AWS::EFS::MountTarget
+    Properties: 
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref SubnetId
+      SecurityGroups: 
+        - !Ref FileSystemSecurityGroup
+  FileSystemSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: File system security group
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId:
+            Fn::GetAtt:
+              - InstanceSecurityGroup
+              - GroupId
