@@ -62,10 +62,8 @@ Resources:
             instance=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
             for i in {1..${NumThreads}}
             do 
-              nohup /opt/afl-2.52b/afl-fuzz -i /opt/input -o /mnt/efs/output -S "$instance-$i" /opt/harness &> "/var/log/afl.$instance-$i.log" &
+              nohup /opt/afl-2.52b/afl-fuzz -i /opt/input -o /mnt/efs/output -S "$instance-$i" /opt/harness &
             done
-            ps -aux | grep afl-fuzz
-            echo "INSTANCE INITIALISED"
   InstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
