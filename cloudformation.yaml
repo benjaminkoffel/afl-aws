@@ -2,13 +2,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 Parameters:
   InstanceType:
     Type: String
-    Default: c5.xlarge
+    Default: m3.xlarge
   ImageId:
     Type: String
-    Default: ami-0fb7513bcdc525c3b
+    Default: ami-082b5a644766e0e6f
   NumInstances:
     Type: Number
-    Default: 2
+    Default: 0
   NumThreads:
     Type: Number
     Default: 4
@@ -21,9 +21,36 @@ Parameters:
     Type: String
   SshKeyName:
     Type: String
-  SshCidrIp:
-    Type: String
+  SshPrefixList:
+    Type: String   
 Resources:
+  MasterInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref SshKeyName
+      SecurityGroupIds: 
+        - !Ref InstanceSecurityGroup
+      SubnetId: !Ref SubnetId
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/usr/bin/env bash
+            set -euxo pipefail
+            yum install -y amazon-efs-utils gcc gcc-c++ make
+            mkdir -p /mnt/efs
+            mount -t efs ${FileSystem}:/ /mnt/efs
+            mkdir -p /mnt/efs/output
+            cd /mnt/efs
+            wget http://lcamtuf.coredump.cx/afl/releases/afl-2.52b.tgz
+            tar -xzf afl-2.52b.tgz
+            make -C afl-2.52b
+            wget -O harness.tar.gz ${HarnessUrl}
+            tar -xzvf harness.tar.gz
+            instance=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            nohup /mnt/efs/afl-2.52b/afl-fuzz -i /mnt/efs/input -o /mnt/efs/output -M "$instance-master" /mnt/efs/harness > "/var/log/$instance-master.log" 2>&1 &
+    DependsOn: MountTarget
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
@@ -39,30 +66,19 @@ Resources:
       InstanceType: !Ref InstanceType
       SecurityGroups: 
         - !Ref InstanceSecurityGroup
-      IamInstanceProfile: !Ref InstanceProfile
       AssociatePublicIpAddress: true
-      KeyName: !Ref SshKeyName
       UserData:
         Fn::Base64:
           !Sub |
             #!/usr/bin/env bash
             set -euxo pipefail
-            yum install -y amazon-efs-utils awscli gcc gcc-c++ make
+            yum install -y amazon-efs-utils
             mkdir /mnt/efs
             mount -t efs ${FileSystem}:/ /mnt/efs
-            mkdir -p /mnt/efs/output
-            cd /opt
-            wget http://lcamtuf.coredump.cx/afl/releases/afl-2.52b.tgz
-            tar -xzf afl-2.52b.tgz
-            cd afl-2.52b
-            make
-            cd /opt
-            wget -O harness.tar.gz ${HarnessUrl}
-            tar -xzvf harness.tar.gz
             instance=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
             for i in {1..${NumThreads}}
             do 
-              nohup /opt/afl-2.52b/afl-fuzz -i /opt/input -o /mnt/efs/output -S "$instance-$i" /opt/harness &
+              nohup /mnt/efs/afl-2.52b/afl-fuzz -i /mnt/efs/input -o /mnt/efs/output -S "$instance-$i" /mnt/efs/harness > "/var/log/$instance-$i.log" 2>&1 &
             done
   InstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -73,34 +89,11 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: !Ref SshCidrIp
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles:
-        - !Ref Role
-  Role:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - ec2.amazonaws.com
-            Action:
-              - sts:AssumeRole
+          SourcePrefixListId: !Ref SshPrefixList
   FileSystem:
     Type: AWS::EFS::FileSystem
-    Properties: 
+    Properties:
       Encrypted: false
-  MountTarget: 
-    Type: AWS::EFS::MountTarget
-    Properties: 
-      FileSystemId: !Ref FileSystem
-      SubnetId: !Ref SubnetId
-      SecurityGroups: 
-        - !Ref FileSystemSecurityGroup
   FileSystemSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -114,3 +107,10 @@ Resources:
             Fn::GetAtt:
               - InstanceSecurityGroup
               - GroupId
+  MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref SubnetId
+      SecurityGroups:
+        - !Ref FileSystemSecurityGroup
